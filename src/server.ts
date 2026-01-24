@@ -8,7 +8,7 @@ type UserDoc = {
   email: string;
   publicId: string;
   dogName: string;
-  dogPicture: string;
+  dogPicture: Buffer | string;
   friends: string[];
   blocked: string[];
   createdAt: Date;
@@ -79,6 +79,12 @@ async function getAuthedUser(req: any): Promise<UserDoc | null> {
 
 function safeList(list: string[] | undefined): string[] {
   return Array.isArray(list) ? list : [];
+}
+
+function encodeDogPicture(value: Buffer | string | undefined): string {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  return value.toString("base64");
 }
 
 function isBlocked(me: UserDoc, other: UserDoc): boolean {
@@ -248,6 +254,37 @@ app.get("/v1/friends", async (req, reply) => {
   const me = await getAuthedUser(req);
   if (!me) return reply.code(401).send({ message: "Unauthorized" });
   return reply.code(200).send({ friends: safeList(me.friends) });
+});
+
+// Get user profile (name + photo only)
+app.get("/v1/users/:id", async (req, reply) => {
+  const parsed = IdParamSchema.safeParse(req.params);
+  if (!parsed.success) {
+    return reply.code(400).send({ message: "Invalid params", issues: parsed.error.issues });
+  }
+
+  const me = await getAuthedUser(req);
+  if (!me) return reply.code(401).send({ message: "Unauthorized" });
+
+  const userId = parsed.data.id;
+  const db = await getDb();
+  const users = db.collection<UserDoc>("users");
+
+  const user = await users.findOne(
+    { publicId: userId },
+    { projection: { _id: 0, publicId: 1, dogName: 1, dogPicture: 1, blocked: 1 } }
+  );
+  if (!user) return reply.code(404).send({ message: "User not found" });
+
+  if (safeList(user.blocked).includes(me.publicId)) {
+    return reply.code(404).send({ message: "User not found" });
+  }
+
+  return reply.code(200).send({
+    id: user.publicId,
+    dogName: user.dogName,
+    dogPicture: encodeDogPicture(user.dogPicture)
+  });
 });
 
 // Unfriend
