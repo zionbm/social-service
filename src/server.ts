@@ -276,10 +276,6 @@ app.get("/v1/users/:id", async (req, reply) => {
   );
   if (!user) return reply.code(404).send({ message: "User not found" });
 
-  if (safeList(user.blocked).includes(me.publicId)) {
-    return reply.code(404).send({ message: "User not found" });
-  }
-
   return reply.code(200).send({
     id: user.publicId,
     dogName: user.dogName,
