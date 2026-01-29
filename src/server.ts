@@ -256,6 +256,13 @@ app.get("/v1/friends", async (req, reply) => {
   return reply.code(200).send({ friends: safeList(me.friends) });
 });
 
+// PublicId + friends for service-to-service use
+app.get("/v1/me/friends", async (req, reply) => {
+  const me = await getAuthedUser(req);
+  if (!me) return reply.code(401).send({ message: "Unauthorized" });
+  return reply.code(200).send({ publicId: me.publicId, friends: safeList(me.friends) });
+});
+
 // Get user profile (name + photo only)
 app.get("/v1/users/:id", async (req, reply) => {
   const parsed = IdParamSchema.safeParse(req.params);
