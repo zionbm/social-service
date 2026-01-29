@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import jwt from "@fastify/jwt";
+import rateLimit from "@fastify/rate-limit";
 import { z } from "zod";
 import { getDb, closeDb } from "./db.js";
 
@@ -24,10 +25,17 @@ type FriendRequestDoc = {
 const app = Fastify({ logger: true });
 
 // --- Config ---
-const JWT_SECRET = process.env.JWT_SECRET ?? "dev-secret-change-me";
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  throw new Error("JWT_SECRET is required");
+}
 
 // --- Plugins ---
 await app.register(jwt, { secret: JWT_SECRET });
+await app.register(rateLimit, {
+  max: 60,
+  timeWindow: "1 minute"
+});
 
 // --- Schemas ---
 const IdParamSchema = z.object({
@@ -40,6 +48,15 @@ const RequestFriendSchema = z.object({
 
 const BlockSchema = z.object({
   blockId: z.string().min(1).max(200)
+});
+
+const BatchUsersSchema = z.object({
+  ids: z.array(z.string().min(1).max(200)).min(1).max(200)
+});
+
+const PaginationSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0)
 });
 
 app.get("/health", async () => ({ ok: true }));
@@ -142,10 +159,13 @@ app.get("/v1/friends/requests/incoming", async (req, reply) => {
 
   const db = await getDb();
   const requests = db.collection<FriendRequestDoc>("friend_requests");
+  const { limit, offset } = PaginationSchema.parse(req.query ?? {});
   const items = await requests
     .find({ toId: me.publicId })
     .project({ _id: 0, fromId: 1, toId: 1, createdAt: 1 })
     .sort({ createdAt: -1 })
+    .skip(offset)
+    .limit(limit)
     .toArray();
 
   return reply.code(200).send({ requests: items });
@@ -158,10 +178,13 @@ app.get("/v1/friends/requests/outgoing", async (req, reply) => {
 
   const db = await getDb();
   const requests = db.collection<FriendRequestDoc>("friend_requests");
+  const { limit, offset } = PaginationSchema.parse(req.query ?? {});
   const items = await requests
     .find({ fromId: me.publicId })
     .project({ _id: 0, fromId: 1, toId: 1, createdAt: 1 })
     .sort({ createdAt: -1 })
+    .skip(offset)
+    .limit(limit)
     .toArray();
 
   return reply.code(200).send({ requests: items });
@@ -253,7 +276,9 @@ app.delete("/v1/friends/requests/:id", async (req, reply) => {
 app.get("/v1/friends", async (req, reply) => {
   const me = await getAuthedUser(req);
   if (!me) return reply.code(401).send({ message: "Unauthorized" });
-  return reply.code(200).send({ friends: safeList(me.friends) });
+  const { limit, offset } = PaginationSchema.parse(req.query ?? {});
+  const list = safeList(me.friends).slice(offset, offset + limit);
+  return reply.code(200).send({ friends: list });
 });
 
 // PublicId + friends for service-to-service use
@@ -288,6 +313,37 @@ app.get("/v1/users/:id", async (req, reply) => {
     dogName: user.dogName,
     dogPicture: encodeDogPicture(user.dogPicture)
   });
+});
+
+// Batch user profiles
+app.post("/v1/users/batch", async (req, reply) => {
+  const parsed = BatchUsersSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return reply.code(400).send({ message: "Invalid payload", issues: parsed.error.issues });
+  }
+
+  const me = await getAuthedUser(req);
+  if (!me) return reply.code(401).send({ message: "Unauthorized" });
+
+  const db = await getDb();
+  const users = db.collection<UserDoc>("users");
+  const ids = parsed.data.ids;
+  const items = await users
+    .find(
+      { publicId: { $in: ids } },
+      { projection: { _id: 0, publicId: 1, dogName: 1, dogPicture: 1, blocked: 1 } }
+    )
+    .toArray();
+
+  const result = items
+    .filter((user) => !safeList(user.blocked).includes(me.publicId))
+    .map((user) => ({
+      id: user.publicId,
+      dogName: user.dogName,
+      dogPicture: encodeDogPicture(user.dogPicture)
+    }));
+
+  return reply.code(200).send({ users: result });
 });
 
 // Unfriend
