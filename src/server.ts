@@ -11,7 +11,7 @@ type UserDoc = {
   dogName: string;
   dogPicture: Buffer | string;
   friends: string[];
-  blocked: string[];
+  avoided: string[];
   createdAt: Date;
 };
 
@@ -46,8 +46,8 @@ const RequestFriendSchema = z.object({
   toId: z.string().min(1).max(200)
 });
 
-const BlockSchema = z.object({
-  blockId: z.string().min(1).max(200)
+const AvoidSchema = z.object({
+  avoidId: z.string().min(1).max(200)
 });
 
 const BatchUsersSchema = z.object({
@@ -104,8 +104,8 @@ function encodeDogPicture(value: Buffer | string | undefined): string {
   return value.toString("base64");
 }
 
-function isBlocked(me: UserDoc, other: UserDoc): boolean {
-  return safeList(me.blocked).includes(other.publicId) || safeList(other.blocked).includes(me.publicId);
+function isAvoided(me: UserDoc, otherId: string): boolean {
+  return safeList(me.avoided).includes(otherId);
 }
 
 // -------- Routes --------
@@ -131,10 +131,6 @@ app.post("/v1/friends/requests", async (req, reply) => {
 
   const target = await users.findOne({ publicId: toId });
   if (!target) return reply.code(404).send({ message: "User not found" });
-
-  if (isBlocked(me, target)) {
-    return reply.code(403).send({ message: "Blocked" });
-  }
 
   if (safeList(me.friends).includes(target.publicId)) {
     return reply.code(409).send({ message: "Already friends" });
@@ -214,10 +210,6 @@ app.post("/v1/friends/requests/:id/approve", async (req, reply) => {
 
   const other = await users.findOne({ publicId: fromId });
   if (!other) return reply.code(404).send({ message: "User not found" });
-
-  if (isBlocked(me, other)) {
-    return reply.code(403).send({ message: "Blocked" });
-  }
 
   await users.updateOne({ publicId: me.publicId }, { $addToSet: { friends: other.publicId } });
   await users.updateOne({ publicId: other.publicId }, { $addToSet: { friends: me.publicId } });
@@ -304,14 +296,15 @@ app.get("/v1/users/:id", async (req, reply) => {
 
   const user = await users.findOne(
     { publicId: userId },
-    { projection: { _id: 0, publicId: 1, dogName: 1, dogPicture: 1, blocked: 1 } }
+    { projection: { _id: 0, publicId: 1, dogName: 1, dogPicture: 1, avoided: 1 } }
   );
   if (!user) return reply.code(404).send({ message: "User not found" });
 
   return reply.code(200).send({
     id: user.publicId,
     dogName: user.dogName,
-    dogPicture: encodeDogPicture(user.dogPicture)
+    dogPicture: encodeDogPicture(user.dogPicture),
+    isAvoided: isAvoided(me, user.publicId),
   });
 });
 
@@ -331,17 +324,17 @@ app.post("/v1/users/batch", async (req, reply) => {
   const items = await users
     .find(
       { publicId: { $in: ids } },
-      { projection: { _id: 0, publicId: 1, dogName: 1, dogPicture: 1, blocked: 1 } }
+      { projection: { _id: 0, publicId: 1, dogName: 1, dogPicture: 1, avoided: 1 } }
     )
     .toArray();
 
-  const result = items
-    .filter((user) => !safeList(user.blocked).includes(me.publicId))
-    .map((user) => ({
-      id: user.publicId,
-      dogName: user.dogName,
-      dogPicture: encodeDogPicture(user.dogPicture)
-    }));
+  const avoided = new Set(safeList(me.avoided));
+  const result = items.map((user) => ({
+    id: user.publicId,
+    dogName: user.dogName,
+    dogPicture: encodeDogPicture(user.dogPicture),
+    isAvoided: avoided.has(user.publicId),
+  }));
 
   return reply.code(200).send({ users: result });
 });
@@ -371,8 +364,8 @@ app.delete("/v1/friends/:id", async (req, reply) => {
 });
 
 // Block user
-app.post("/v1/blocks", async (req, reply) => {
-  const parsed = BlockSchema.safeParse(req.body);
+app.post("/v1/avoids", async (req, reply) => {
+  const parsed = AvoidSchema.safeParse(req.body);
   if (!parsed.success) {
     return reply.code(400).send({ message: "Invalid payload", issues: parsed.error.issues });
   }
@@ -380,31 +373,24 @@ app.post("/v1/blocks", async (req, reply) => {
   const me = await getAuthedUser(req);
   if (!me) return reply.code(401).send({ message: "Unauthorized" });
 
-  const { blockId } = parsed.data;
-  if (blockId === me.publicId) {
-    return reply.code(400).send({ message: "Cannot block yourself" });
+  const { avoidId } = parsed.data;
+  if (avoidId === me.publicId) {
+    return reply.code(400).send({ message: "Cannot avoid yourself" });
   }
 
   const db = await getDb();
   const users = db.collection<UserDoc>("users");
-  const requests = db.collection<FriendRequestDoc>("friend_requests");
 
-  const target = await users.findOne({ publicId: blockId });
+  const target = await users.findOne({ publicId: avoidId });
   if (!target) return reply.code(404).send({ message: "User not found" });
 
-  await users.updateOne({ publicId: me.publicId }, { $addToSet: { blocked: blockId } });
+  await users.updateOne({ publicId: me.publicId }, { $addToSet: { avoided: avoidId } });
 
-  await users.updateOne({ publicId: me.publicId }, { $pull: { friends: blockId } });
-  await users.updateOne({ publicId: blockId }, { $pull: { friends: me.publicId } });
-
-  await requests.deleteOne({ fromId: me.publicId, toId: blockId });
-  await requests.deleteOne({ fromId: blockId, toId: me.publicId });
-
-  return reply.code(200).send({ blocked: true });
+  return reply.code(200).send({ avoided: true });
 });
 
-// Unblock user
-app.delete("/v1/blocks/:id", async (req, reply) => {
+// Unavoid user
+app.delete("/v1/avoids/:id", async (req, reply) => {
   const parsed = IdParamSchema.safeParse(req.params);
   if (!parsed.success) {
     return reply.code(400).send({ message: "Invalid params", issues: parsed.error.issues });
@@ -413,13 +399,22 @@ app.delete("/v1/blocks/:id", async (req, reply) => {
   const me = await getAuthedUser(req);
   if (!me) return reply.code(401).send({ message: "Unauthorized" });
 
-  const blockId = parsed.data.id;
+  const avoidId = parsed.data.id;
   const db = await getDb();
   const users = db.collection<UserDoc>("users");
 
-  await users.updateOne({ publicId: me.publicId }, { $pull: { blocked: blockId } });
+  await users.updateOne({ publicId: me.publicId }, { $pull: { avoided: avoidId } });
 
-  return reply.code(200).send({ unblocked: true });
+  return reply.code(200).send({ unavoided: true });
+});
+
+// List avoided users
+app.get("/v1/avoids", async (req, reply) => {
+  const me = await getAuthedUser(req);
+  if (!me) return reply.code(401).send({ message: "Unauthorized" });
+  const { limit, offset } = PaginationSchema.parse(req.query ?? {});
+  const list = safeList(me.avoided).slice(offset, offset + limit);
+  return reply.code(200).send({ avoids: list });
 });
 
 // Shutdown
