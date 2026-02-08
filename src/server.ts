@@ -8,8 +8,6 @@ type UserDoc = {
   _id?: unknown;
   email: string;
   publicId: string;
-  dogName: string;
-  dogPicture: Buffer | string;
   friends: string[];
   avoided: string[];
   createdAt: Date;
@@ -36,6 +34,8 @@ await app.register(rateLimit, {
   max: 60,
   timeWindow: "1 minute"
 });
+
+const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL ?? "http://localhost:4000";
 
 // --- Schemas ---
 const IdParamSchema = z.object({
@@ -96,12 +96,6 @@ async function getAuthedUser(req: any): Promise<UserDoc | null> {
 
 function safeList(list: string[] | undefined): string[] {
   return Array.isArray(list) ? list : [];
-}
-
-function encodeDogPicture(value: Buffer | string | undefined): string {
-  if (!value) return "";
-  if (typeof value === "string") return value;
-  return value.toString("base64");
 }
 
 function isAvoided(me: UserDoc, otherId: string): boolean {
@@ -290,21 +284,21 @@ app.get("/v1/users/:id", async (req, reply) => {
   const me = await getAuthedUser(req);
   if (!me) return reply.code(401).send({ message: "Unauthorized" });
 
-  const userId = parsed.data.id;
-  const db = await getDb();
-  const users = db.collection<UserDoc>("users");
+  const auth = req.headers["authorization"];
+  if (!auth || typeof auth !== "string") return reply.code(401).send({ message: "Unauthorized" });
 
-  const user = await users.findOne(
-    { publicId: userId },
-    { projection: { _id: 0, publicId: 1, dogName: 1, dogPicture: 1, avoided: 1 } }
-  );
-  if (!user) return reply.code(404).send({ message: "User not found" });
+  const res = await fetch(`${AUTH_SERVICE_URL}/v1/users/${parsed.data.id}`, {
+    headers: { Authorization: auth }
+  });
+  if (res.status === 404) return reply.code(404).send({ message: "User not found" });
+  if (!res.ok) return reply.code(502).send({ message: "Profile lookup failed" });
 
+  const user = (await res.json()) as { id: string; dogName: string; dogPicture: string };
   return reply.code(200).send({
-    id: user.publicId,
+    id: user.id,
     dogName: user.dogName,
-    dogPicture: encodeDogPicture(user.dogPicture),
-    isAvoided: isAvoided(me, user.publicId),
+    dogPicture: user.dogPicture,
+    isAvoided: isAvoided(me, user.id),
   });
 });
 
@@ -318,22 +312,26 @@ app.post("/v1/users/batch", async (req, reply) => {
   const me = await getAuthedUser(req);
   if (!me) return reply.code(401).send({ message: "Unauthorized" });
 
-  const db = await getDb();
-  const users = db.collection<UserDoc>("users");
-  const ids = parsed.data.ids;
-  const items = await users
-    .find(
-      { publicId: { $in: ids } },
-      { projection: { _id: 0, publicId: 1, dogName: 1, dogPicture: 1, avoided: 1 } }
-    )
-    .toArray();
+  const auth = req.headers["authorization"];
+  if (!auth || typeof auth !== "string") return reply.code(401).send({ message: "Unauthorized" });
+
+  const res = await fetch(`${AUTH_SERVICE_URL}/v1/users/batch`, {
+    method: "POST",
+    headers: { Authorization: auth, "Content-Type": "application/json" },
+    body: JSON.stringify({ ids: parsed.data.ids })
+  });
+  if (!res.ok) return reply.code(502).send({ message: "Profile lookup failed" });
+
+  const decoded = (await res.json()) as {
+    users: Array<{ id: string; dogName: string; dogPicture: string }>;
+  };
 
   const avoided = new Set(safeList(me.avoided));
-  const result = items.map((user) => ({
-    id: user.publicId,
+  const result = decoded.users.map((user) => ({
+    id: user.id,
     dogName: user.dogName,
-    dogPicture: encodeDogPicture(user.dogPicture),
-    isAvoided: avoided.has(user.publicId),
+    dogPicture: user.dogPicture,
+    isAvoided: avoided.has(user.id),
   }));
 
   return reply.code(200).send({ users: result });
