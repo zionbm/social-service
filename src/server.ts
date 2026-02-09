@@ -36,6 +36,7 @@ await app.register(rateLimit, {
 });
 
 const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL ?? "http://localhost:4000";
+const LOCATION_SERVICE_URL = process.env.LOCATION_SERVICE_URL ?? "http://localhost:3000";
 
 // --- Schemas ---
 const IdParamSchema = z.object({
@@ -51,6 +52,10 @@ const AvoidSchema = z.object({
 });
 
 const BatchUsersSchema = z.object({
+  ids: z.array(z.string().min(1).max(200)).min(1).max(200)
+});
+
+const ActiveIdsSchema = z.object({
   ids: z.array(z.string().min(1).max(200)).min(1).max(200)
 });
 
@@ -335,6 +340,35 @@ app.post("/v1/users/batch", async (req, reply) => {
   }));
 
   return reply.code(200).send({ users: result });
+});
+
+// Active friends by last location update
+app.post("/v1/friends/active", async (req, reply) => {
+  const parsed = ActiveIdsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return reply.code(400).send({ message: "Invalid payload", issues: parsed.error.issues });
+  }
+
+  const auth = req.headers["authorization"];
+  if (!auth || typeof auth !== "string") {
+    return reply.code(401).send({ message: "Unauthorized" });
+  }
+
+  const res = await fetch(`${LOCATION_SERVICE_URL}/v1/locations/active`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: auth,
+    },
+    body: JSON.stringify({ ids: parsed.data.ids }),
+  });
+
+  if (!res.ok) {
+    return reply.code(502).send({ message: "Location service error" });
+  }
+
+  const data = (await res.json()) as { activeIds?: string[] };
+  return reply.code(200).send({ activeIds: data.activeIds ?? [] });
 });
 
 // Unfriend
