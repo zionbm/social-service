@@ -32,6 +32,51 @@ const app = Fastify({
   },
 });
 
+const userIdCache = new Map<string, { id: string; expiresAt: number }>();
+
+app.addHook("onRequest", async (req) => {
+  (req as any).startMs = Date.now();
+});
+
+async function getPublicIdByEmail(email: string): Promise<string | null> {
+  const cached = userIdCache.get(email);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) return cached.id;
+
+  const db = await getDb();
+  const user = await db.collection<UserDoc>("users").findOne(
+    { email: email.toLowerCase() },
+    { projection: { _id: 0, publicId: 1 } }
+  );
+  if (!user?.publicId) return null;
+  userIdCache.set(email, { id: user.publicId, expiresAt: now + 15_000 });
+  return user.publicId;
+}
+
+app.addHook("onResponse", async (req, reply) => {
+  const reqAny = req as any;
+  let publicId = reqAny.userPublicId as string | undefined;
+  if (!publicId) {
+    const email = req.user?.sub;
+    if (!email || typeof email !== "string") return;
+    publicId = await getPublicIdByEmail(email);
+  }
+  if (!publicId) return;
+  const startMs = (req as any).startMs as number | undefined;
+  const durationMs = startMs ? Date.now() - startMs : undefined;
+  req.log.info(
+    {
+      userId: publicId,
+      requestId: req.id,
+      method: req.method,
+      url: req.url,
+      statusCode: reply.statusCode,
+      durationMs,
+    },
+    "request completed"
+  );
+});
+
 // --- Config ---
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
@@ -106,7 +151,9 @@ async function getAuthedUser(req: any): Promise<UserDoc | null> {
   const email = req.user?.sub;
   if (!email || typeof email !== "string") return null;
   const db = await getDb();
-  return db.collection<UserDoc>("users").findOne({ email: normalizeEmail(email) });
+  const user = await db.collection<UserDoc>("users").findOne({ email: normalizeEmail(email) });
+  if (user) req.userPublicId = user.publicId;
+  return user;
 }
 
 function safeList(list: string[] | undefined): string[] {
