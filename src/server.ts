@@ -38,7 +38,7 @@ app.addHook("onRequest", async (req) => {
   (req as any).startMs = Date.now();
 });
 
-async function getPublicIdByEmail(email: string): Promise<string | null> {
+async function getPublicIdByEmail(email: string): Promise<string | undefined> {
   const cached = userIdCache.get(email);
   const now = Date.now();
   if (cached && cached.expiresAt > now) return cached.id;
@@ -48,17 +48,24 @@ async function getPublicIdByEmail(email: string): Promise<string | null> {
     { email: email.toLowerCase() },
     { projection: { _id: 0, publicId: 1 } }
   );
-  if (!user?.publicId) return null;
+  if (!user?.publicId) return undefined;
   userIdCache.set(email, { id: user.publicId, expiresAt: now + 15_000 });
   return user.publicId;
+}
+
+function getJwtEmail(req: { user?: unknown }): string | undefined {
+  const user = req.user;
+  if (!user || typeof user !== "object") return undefined;
+  const sub = (user as { sub?: unknown }).sub;
+  return typeof sub === "string" ? sub : undefined;
 }
 
 app.addHook("onResponse", async (req, reply) => {
   const reqAny = req as any;
   let publicId = reqAny.userPublicId as string | undefined;
   if (!publicId) {
-    const email = req.user?.sub;
-    if (!email || typeof email !== "string") return;
+    const email = getJwtEmail(req);
+    if (!email) return;
     publicId = await getPublicIdByEmail(email);
   }
   if (!publicId) return;
