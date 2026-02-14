@@ -20,7 +20,17 @@ type FriendRequestDoc = {
   createdAt: Date;
 };
 
-const app = Fastify({ logger: true });
+const app = Fastify({
+  logger: {
+    level: process.env.LOG_LEVEL ?? "info",
+    messageKey: "message",
+    formatters: {
+      level(label) {
+        return { severity: label.toUpperCase() };
+      },
+    },
+  },
+});
 
 // --- Config ---
 const JWT_SECRET = process.env.JWT_SECRET;
