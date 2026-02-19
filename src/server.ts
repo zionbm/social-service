@@ -362,11 +362,21 @@ app.get("/v1/users/:id", async (req, reply) => {
   if (res.status === 404) return reply.code(404).send({ message: "User not found" });
   if (!res.ok) return reply.code(502).send({ message: "Profile lookup failed" });
 
-  const user = (await res.json()) as { id: string; dogName: string; dogPicture: string };
+  const user = (await res.json()) as {
+    id: string;
+    dogName: string;
+    dogPicture: string;
+    dogGender?: string | null;
+    dogSize?: string | null;
+    dogDescription?: string | null;
+  };
   return reply.code(200).send({
     id: user.id,
     dogName: user.dogName,
     dogPicture: user.dogPicture,
+    dogGender: user.dogGender ?? null,
+    dogSize: user.dogSize ?? null,
+    dogDescription: user.dogDescription ?? null,
     isAvoided: isAvoided(me, user.id),
   });
 });
@@ -392,7 +402,14 @@ app.post("/v1/users/batch", async (req, reply) => {
   if (!res.ok) return reply.code(502).send({ message: "Profile lookup failed" });
 
   const decoded = (await res.json()) as {
-    users: Array<{ id: string; dogName: string; dogPicture: string }>;
+    users: Array<{
+      id: string;
+      dogName: string;
+      dogPicture: string;
+      dogGender?: string | null;
+      dogSize?: string | null;
+      dogDescription?: string | null;
+    }>;
   };
 
   const avoided = new Set(safeList(me.avoided));
@@ -400,6 +417,9 @@ app.post("/v1/users/batch", async (req, reply) => {
     id: user.id,
     dogName: user.dogName,
     dogPicture: user.dogPicture,
+    dogGender: user.dogGender ?? null,
+    dogSize: user.dogSize ?? null,
+    dogDescription: user.dogDescription ?? null,
     isAvoided: avoided.has(user.id),
   }));
 
